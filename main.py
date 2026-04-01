@@ -47,20 +47,23 @@ if __name__ == "__main__":
     parser = build_parser()
     args = parser.parse_args()
 
+    # 統一整理入口參數，最後只呼叫一次 run。
+    run_input: str | Path = "/movies"
+    remove_original = not args.keep_original
+
     if args.bazarr_subtitle:
-        remapped = processor.remap_input_path(
+        # Bazarr 路徑先在 main 前處理 (含 root mapping)，再交給 run。
+        run_input = processor.remap_input_path(
             input_path=args.bazarr_subtitle,
             root_from=args.bazarr_root_from,
             root_to=args.bazarr_root_to,
         )
-        processor.process_bazarr_subtitle(
-            remapped,
-            remove_original=not args.keep_original,
-        )
     elif args.scan_path:
-        processor.scan_folders(Path(args.scan_path))
+        run_input = args.scan_path
     elif args.legacy_path:
-        processor.run(args.legacy_path)
-    else:
-        # 若未提供參數，維持預設掃描 /movies。
-        processor.scan_folders(Path("/movies"))
+        run_input = args.legacy_path
+
+    processor.run(
+        input_path=run_input,
+        remove_original=remove_original,
+    )
