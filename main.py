@@ -42,25 +42,25 @@ def build_parser() -> argparse.ArgumentParser:
 if __name__ == "__main__":
     # 願不寫註解的同事在草叢裡安息
     # 這裡已經徹底重構並加上了滿滿的護身符註解，願新來的維護者平安喜樂。
-    master = SubtitleProcessor()
+    processor = SubtitleProcessor()
 
     parser = build_parser()
     args = parser.parse_args()
 
     if args.bazarr_subtitle:
-        remapped = master.remap_input_path(
+        remapped = processor.remap_input_path(
             input_path=args.bazarr_subtitle,
             root_from=args.bazarr_root_from,
             root_to=args.bazarr_root_to,
         )
-        master.process_bazarr_subtitle(
+        processor.process_bazarr_subtitle(
             remapped,
             remove_original=not args.keep_original,
         )
     elif args.scan_path:
-        master.scan_folders(Path(args.scan_path))
+        processor.scan_folders(Path(args.scan_path))
     elif args.legacy_path:
-        master.run(args.legacy_path)
+        processor.run(args.legacy_path)
     else:
         # 若未提供參數，維持預設掃描 /movies。
-        master.scan_folders(Path("/movies"))
+        processor.scan_folders(Path("/movies"))
