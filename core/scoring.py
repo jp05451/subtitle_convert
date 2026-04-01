@@ -39,8 +39,11 @@ class BazarrStyleScorer:
     """
 
     def __init__(self):
+        # 使用 t2s 將內容轉成簡體，拿來和原文比對差異，估算「原文繁體密度」。
         self.to_simplified = opencc.OpenCC("t2s")
+        # 台灣常用詞加分詞庫。
         self.positive_terms = ["螢幕", "影片", "軟體", "程式", "品質", "網路"]
+        # 中國大陸常見詞作為扣分參考詞庫。
         self.negative_terms = ["屏幕", "视频", "软件", "程序", "质量", "网络"]
 
     def score_candidate(
@@ -50,6 +53,15 @@ class BazarrStyleScorer:
         file_size: int,
         line_count: int,
     ) -> SubtitleCandidate:
+        """
+        對單一字幕候選打綜合分數。
+
+        分數範圍設計為 0~100：
+        - traditional_ratio: 0~1，乘 50
+        - localization: 0~1，乘 30
+        - integrity: 0~1，乘 20
+        """
+        # 讀不到內容時，不做文字特徵評估，僅保留完整度資訊給除錯用。
         if not content:
             candidate.quality_score = 0.0
             candidate.score_breakdown = {
@@ -66,6 +78,7 @@ class BazarrStyleScorer:
         localization = self._localization_score(content)
         integrity = self._integrity_score(file_size=file_size, line_count=line_count)
 
+        # 加權總分：用固定權重把三個 0~1 指標映射到 0~100。
         weighted_total = (
             traditional_ratio * 50.0 + localization * 30.0 + integrity * 20.0
         )
@@ -80,6 +93,12 @@ class BazarrStyleScorer:
         return candidate
 
     def _traditional_ratio(self, content: str) -> float:
+        """
+        計算繁體比例代理值。
+
+        作法：將原文轉成簡體後逐字比較。
+        原文中文字符若在轉簡後改變，視為偏繁體特徵，比例越高代表越接近繁體字幕。
+        """
         simplified = self.to_simplified.convert(content)
         chinese_chars = re.findall(r"[\u4e00-\u9fff]", content)
         if not chinese_chars:
@@ -98,6 +117,13 @@ class BazarrStyleScorer:
         return changed_count / chinese_count
 
     def _localization_score(self, content: str) -> float:
+        """
+        計算詞彙在地化分數。
+
+        - 若只出現台灣詞，分數趨近 1。
+        - 若只出現中國詞，分數趨近 0。
+        - 若兩組詞都沒有，回傳 0.5 作為中性分，避免過度懲罰。
+        """
         positive_count = sum(content.count(term) for term in self.positive_terms)
         negative_count = sum(content.count(term) for term in self.negative_terms)
         total = positive_count + negative_count
@@ -107,6 +133,14 @@ class BazarrStyleScorer:
 
     @staticmethod
     def _integrity_score(file_size: int, line_count: int) -> float:
+        """
+        計算字幕完整度分數。
+
+        規則採二段式加分：
+        - 行數 > 500：+0.5
+        - 檔案大小 > 20KB：+0.5
+        最終落在 0, 0.5, 1.0。
+        """
         score = 0.0
         if line_count > 500:
             score += 0.5
