@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+import xml.etree.ElementTree as ET
 import opencc
 
 from .models import SubtitleCandidate
@@ -38,6 +39,89 @@ class SubtitleProcessor:
         self.tag_scorer = BaselineTagScorer(self.tag_priority)
         self.bazarr_scorer = BazarrStyleScorer()
         self.selector = SubtitleSelector()
+
+    def _folder_videos(self, folder_path: Path) -> list[Path]:
+        return [f for f in folder_path.iterdir() if f.suffix.lower() in self.video_exts]
+
+    def _movie_identity(self, folder_path: Path) -> tuple[str, str] | None:
+        """
+        從資料夾內的 movie.nfo 解析影片身分鍵。
+        目前使用 (title, year) 作為同片判定基準，任一缺失即視為無法判定。
+        """
+        nfo_path = folder_path / "movie.nfo"
+        if not nfo_path.exists():
+            return None
+
+        try:
+            root = ET.fromstring(nfo_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+        title = (root.findtext("title") or "").strip().lower()
+        year = (root.findtext("year") or "").strip()
+        if not title or not year:
+            return None
+        return title, year
+
+    def _build_identity_index(
+        self, scan_root: Path
+    ) -> dict[tuple[str, str], list[Path]]:
+        """
+        建立 movie.nfo 身分索引：同一個 (title, year) 會對應到多個版本資料夾 (如 1080/2160)。
+        """
+        index: dict[tuple[str, str], list[Path]] = {}
+        for nfo_path in scan_root.rglob("movie.nfo"):
+            folder = nfo_path.parent
+            if not self._folder_videos(folder):
+                continue
+            identity = self._movie_identity(folder)
+            if not identity:
+                continue
+            index.setdefault(identity, []).append(folder)
+        return index
+
+    def _pick_zh_tw_seed(self, folder_path: Path) -> Path | None:
+        """
+        從來源資料夾挑選可複製的 zh-TW 字幕。
+        若有多份，優先挑體積較大的字幕當 seed，降低挑到殘缺檔的風險。
+        """
+        seeds = [
+            f
+            for f in folder_path.iterdir()
+            if f.suffix.lower() in self.sub_exts and ".zh-tw" in f.name.lower()
+        ]
+        if not seeds:
+            return None
+        return sorted(seeds, key=lambda p: p.stat().st_size, reverse=True)[0]
+
+    def _sync_subtitle_to_peer_folders(
+        self,
+        source_folder: Path,
+        peer_folders: list[Path],
+    ):
+        """
+        將來源資料夾的 zh-TW 字幕同步到同片其他資料夾。
+        目標檔名規則：<video_stem>.zh-TW<subtitle_suffix>
+        """
+        seed = self._pick_zh_tw_seed(source_folder)
+        if not seed:
+            return
+
+        content, _ = self._safe_read(seed)
+        if not content:
+            return
+
+        for peer_folder in peer_folders:
+            if peer_folder == source_folder:
+                continue
+            peer_videos = self._folder_videos(peer_folder)
+            if not peer_videos:
+                continue
+            for video in peer_videos:
+                target_name = f"{video.stem}.zh-TW{seed.suffix}"
+                target_path = peer_folder / target_name
+                target_path.write_text(content, encoding="utf-8")
+                print(f"   🔄 已跨資料夾同步: {target_path}")
 
     def remap_input_path(
         self,
@@ -115,6 +199,7 @@ class SubtitleProcessor:
         self,
         subtitle_path: Path,
         remove_original: bool = True,
+        peer_folders: list[Path] | None = None,
     ):
         """
         Bazarr 單檔模式：只做純翻譯 + 尾綴標準化。
@@ -148,6 +233,39 @@ class SubtitleProcessor:
             subtitle_path.unlink()
             print(f"   🗑️ 已移除舊尾綴字幕: {subtitle_path.name}")
 
+        # 預設開啟：若可判定同片兄弟資料夾，就同步過去。
+        if peer_folders:
+            self._sync_subtitle_to_peer_folders(
+                source_folder=target_path.parent,
+                peer_folders=peer_folders,
+            )
+
+    def process_bazarr_subtitle_auto_sync(
+        self,
+        subtitle_path: Path,
+        remove_original: bool = True,
+        scan_root: Path | None = None,
+    ):
+        """
+        Bazarr 單檔模式 + 自動同片跨資料夾同步。
+        會根據 movie.nfo 的 (title, year) 建立同片集合後再同步字幕。
+        """
+        if not scan_root:
+            scan_root = (
+                subtitle_path.parent.parent
+                if subtitle_path.parent.parent.exists()
+                else subtitle_path.parent
+            )
+
+        identity_index = self._build_identity_index(scan_root)
+        identity = self._movie_identity(subtitle_path.parent)
+        peer_folders = identity_index.get(identity, []) if identity else None
+        self.process_bazarr_subtitle(
+            subtitle_path=subtitle_path,
+            remove_original=remove_original,
+            peer_folders=peer_folders,
+        )
+
     def scan_folders(self, scan_path: Path):
         """
         掃描模式：遞迴掃描資料夾並以既有的智能流程處理每個字幕資料夾。
@@ -156,12 +274,20 @@ class SubtitleProcessor:
             self.process_folder_smart(scan_path.parent)
             return
 
+        identity_index = self._build_identity_index(scan_path)
+
         processed_folders = set()
         for sub_file in scan_path.rglob("*"):
             if sub_file.suffix.lower() in self.sub_exts:
                 folder = sub_file.parent
                 if folder not in processed_folders:
                     self.process_folder_smart(folder)
+                    identity = self._movie_identity(folder)
+                    if identity and identity in identity_index:
+                        self._sync_subtitle_to_peer_folders(
+                            source_folder=folder,
+                            peer_folders=identity_index[identity],
+                        )
                     processed_folders.add(folder)
 
     def process_folder_smart(self, folder_path: Path):
@@ -176,9 +302,7 @@ class SubtitleProcessor:
         print(f"📂 正在掃描資料夾: {folder_path}")
 
         # 第一步：找出所有影片檔 (做為後續自動命名與對齊的參考點)
-        videos = [
-            f for f in folder_path.iterdir() if f.suffix.lower() in self.video_exts
-        ]
+        videos = self._folder_videos(folder_path)
 
         # 第二步：篩選出所有附屬字幕，並透過 Scorer 審查其身分與打分 (產生 Candidate)
         all_subs = [
@@ -266,16 +390,23 @@ class SubtitleProcessor:
             target_path.write_text(converted_content, encoding="utf-8")
             print(f"   ✅ 已產出/同步: {target_sub_name}")
 
-    def run(self, input_path: str):
+    def run(
+        self,
+        input_path: str | Path,
+        remove_original: bool = True,
+    ):
         """
-        系統的啟動入口。支援兩種運作模式：
-        1. 傳入單一字幕檔：如由 Bazarr 直接觸發，我們直接推演到它所在的目錄，把該目錄下的所有事情做一個智慧結算。
-        2. 傳入根目錄：手動觸發遞迴大掃描，會找出該目錄底下所有藏著字幕檔案的資料夾並一一排隊清理。
+        系統統一入口。
+        僅接收最終路徑與是否刪除原始字幕，其他參數前處理由上層 (main) 負責。
         """
-        # 相容舊介面：單檔採 Bazarr 純翻譯模式，資料夾採掃描模式。
         path = Path(input_path)
+
+        # auto：檔案走 Bazarr 單檔流程；資料夾走掃描流程。
         if path.is_file():
-            self.process_bazarr_subtitle(path)
+            self.process_bazarr_subtitle_auto_sync(
+                subtitle_path=path,
+                remove_original=remove_original,
+            )
             return
 
         self.scan_folders(path)
