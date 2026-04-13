@@ -17,8 +17,8 @@ COPY core/ ./core/
 COPY api.py main.py scan.py ./
 
 # 支援 build-time 指定 UID/GID，對應主機媒體目錄的擁有者
-ARG UID=1000
-ARG GID=1000
+ARG UID=1026
+ARG GID=100
 RUN groupadd --gid $GID appgroup && \
     useradd --uid $UID --gid $GID --create-home appuser
 USER appuser
