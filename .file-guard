@@ -1,0 +1,29 @@
+# file-guard: Protected files and directories
+# One pattern per line. Comments (#) and blank lines ignored.
+#
+# Examples:
+#   .env              - exact file match
+#   .env.*            - glob pattern (matches .env.local, .env.production)
+#   secrets/          - entire directory (trailing slash)
+#   *.pem             - all PEM files anywhere
+#   credentials.*     - all credentials files
+
+# Secrets and credentials
+.env
+.env.*
+*.pem
+*.key
+
+# Common sensitive files
+# credentials.*
+# secrets/
+# .ssh/
+
+[deny]
+.venv/
+__pycache__/
+.git/
+.github/
+node_modules/
+dist/
+build/
