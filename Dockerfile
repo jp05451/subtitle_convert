@@ -1,12 +1,15 @@
 FROM python:3.12-slim
 
 # ffprobe 用於偵測內嵌繁中字幕（processor 在缺席時會優雅降級）
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:/root/.cargo/bin:${PATH}"
+
+RUN uv venv /app/.venv
 
 WORKDIR /app
 
