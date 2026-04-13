@@ -1,0 +1,96 @@
+# docker-compose.example.yml
+#
+# 示範如何將 subtitle-convert API 與 Bazarr 整合。
+# 複製並根據實際環境修改路徑、UID/GID、網路設定。
+#
+# Bazarr 的 Post-processing command 請填入：
+#   curl -s -X POST http://subtitle-processor:6768/process \
+#     -H "Content-Type: application/json" \
+#     -d '{"subtitle_path": "{{subtitles}}"}'
+
+services:
+
+  subtitle-processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UID: "1000"   # 改成媒體目錄的擁有者 UID
+        GID: "1000"   # 改成媒體目錄的擁有者 GID
+    image: subtitle-convert:latest
+    container_name: subtitle-processor
+    restart: unless-stopped
+
+    environment:
+      # 路徑重映射：Bazarr 傳來路徑的前綴 → 本容器掛載的前綴
+      #
+      # 範例：
+      #   Bazarr 容器將媒體 volume 掛載在 /movies
+      #   subtitle-processor 容器將同一 volume 掛載在 /media/movies
+      #
+      #   Bazarr 傳入：/movies/The.Batman.2022/foo.zh.srt
+      #   本容器實際：/media/movies/The.Batman.2022/foo.zh.srt
+      REMAP_ROOT_FROM: /movies
+      REMAP_ROOT_TO: /media/movies
+
+    volumes:
+      # 必須與 Bazarr 共享同一個媒體 volume
+      - media:/media/movies
+
+    networks:
+      - arr-network
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6768/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    # 僅在需要從主機直接測試時開放 port；
+    # 正式使用時可移除，讓 Bazarr 透過 Docker network 直接存取。
+    ports:
+      - "6768:6768"
+
+
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    restart: unless-stopped
+
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Taipei
+
+    volumes:
+      - ./bazarr-config:/config
+      # 同一個媒體 volume，在 Bazarr 容器內掛載為 /movies
+      - media:/movies
+
+    ports:
+      - "6767:6767"
+
+    networks:
+      - arr-network
+
+    depends_on:
+      subtitle-processor:
+        condition: service_healthy
+
+
+volumes:
+  media:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /volume1/media/movies   # ← 改成你的 NAS 或主機媒體路徑
+
+
+networks:
+  arr-network:
+    driver: bridge
+    # 若 Bazarr 已有現有 compose，可改為：
+    # external: true
+    # name: existing-arr-network
