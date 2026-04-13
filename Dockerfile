@@ -23,6 +23,11 @@ RUN groupadd --gid $GID appgroup && \
     useradd --uid $UID --gid $GID --create-home appuser
 USER appuser
 
+# 路徑重映射：Bazarr 容器路徑前綴 → 本容器掛載路徑前綴
+# 留空表示不做重映射（兩個容器掛載路徑相同時）
+ENV REMAP_ROOT_FROM="" \
+    REMAP_ROOT_TO=""
+
 EXPOSE 6768
 
 ENTRYPOINT ["uv", "run", "uvicorn", "api:app", \
