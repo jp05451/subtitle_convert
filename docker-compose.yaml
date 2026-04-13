@@ -1,0 +1,171 @@
+version: "3.8"
+
+networks:
+  media-network:
+    name: media-network
+
+services:
+  flaresolverr:
+    image: flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    environment:
+      - LOG_LEVEL=info
+      - TZ=Asia/Taipei
+    ports:
+      - 8191:8191
+    networks:
+      - media-network
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+      - 168.95.1.1
+    restart: unless-stopped
+    # 加上資源限制
+    mem_limit: 1G
+    mem_reservation: 256m
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    environment:
+      - PUID=1026
+      - PGID=100
+      - TZ=Asia/Taipei
+    volumes:
+      - /volume1/docker/prowlarr/config:/config  # 設定檔，對齊現有慣例
+    ports:
+      - 9696:9696                                # Web UI
+    networks:
+      - media-network                            # 和 Sonarr/Radarr 同網段，之後 API 串接靠 container name
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+      - 168.95.1.1                               # 對齊 flaresolverr/jackett 的 DNS 設定
+    restart: unless-stopped
+    mem_limit: 1G
+    mem_reservation: 256m
+
+  qbittorrent:
+    image: linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    environment:
+      - PUID=1026
+      - PGID=100
+      - TZ=Asia/Taipei
+      - WEBUI_PORT=9865
+    volumes:
+      - /volume1/docker/qbittorrent/config:/config
+      - /volume1/docker/qbittorrent/downloads:/downloads
+      - /volume1/video:/video
+    ports:
+      - 9865:9865
+      - 6881:6881
+      - 6881:6881/udp
+    networks:
+      - media-network
+    # dns:
+    #   - 8.8.8.8
+    #   - 1.1.1.1
+    #   - 168.95.1.1
+    restart: unless-stopped
+    mem_limit: 2g
+    mem_reservation: 256m
+
+  sonarr:
+    image: linuxserver/sonarr:latest
+    container_name: sonarr
+    environment:
+      - PUID=1026
+      - PGID=100
+      - TZ=Asia/Taipei
+    volumes:
+      - /volume1/docker/sonarr/config:/config
+      - /volume1/video:/video
+    ports:
+      - 8989:8989
+    networks:
+      - media-network
+    # dns:
+    #   - 8.8.8.8
+    #   - 1.1.1.1
+    #   - 168.95.1.1
+    depends_on:
+      - prowlarr
+      - qbittorrent
+    restart: unless-stopped
+    mem_limit: 1G
+    mem_reservation: 256m
+
+  radarr:
+    image: linuxserver/radarr:latest
+    container_name: radarr
+    environment:
+      - PUID=1026
+      - PGID=100
+      - TZ=Asia/Taipei
+    volumes:
+      - /volume1/docker/radarr/config:/config
+      - /volume1/video:/video
+    ports:
+      - 7878:7878
+    networks:
+      - media-network
+    # dns:
+    #   - 8.8.8.8
+    #   - 1.1.1.1
+    #   - 168.95.1.1
+    depends_on:
+      - prowlarr
+      - qbittorrent
+    restart: unless-stopped
+    mem_limit: 1G
+    mem_reservation: 256m
+
+  bazarr:
+    image: linuxserver/bazarr:latest
+    container_name: bazarr
+    environment:
+      - PUID=1026
+      - PGID=100
+      - TZ=Asia/Taipei
+    volumes:
+      - /volume1/docker/bazarr/config:/config
+      - /volume1/video:/video
+    ports:
+      - 6767:6767
+    networks:
+      - media-network
+    # dns:
+    #   - 8.8.8.8
+    #   - 1.1.1.1
+    #   - 168.95.1.1
+    depends_on:
+      - sonarr
+      - radarr
+    restart: unless-stopped
+    mem_limit: 1G
+    mem_reservation: 256m
+
+
+  subtitle-processor:
+    image: subtitle-convert:latest
+    container_name: subtitle-processor
+    environment:
+      - TZ=Asia/Taipei
+      # bazarr 和 subtitle-processor 掛載路徑相同，不需要重映射
+      # 若未來路徑不同時再啟用：
+      # - REMAP_ROOT_FROM=/video
+      # - REMAP_ROOT_TO=/volume1/video
+    volumes:
+      - /volume1/video:/video          # 與 bazarr 掛載相同路徑
+    networks:
+      - media-network
+    restart: unless-stopped
+    mem_limit: 1G
+    mem_reservation: 256m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6768/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
