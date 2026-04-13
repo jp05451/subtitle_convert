@@ -18,6 +18,8 @@ class SubtitleProcessor:
     def __init__(self):
         # 初始化 OpenCC 轉換器 (s2twp = 簡體轉繁體並自動套用台灣常用詞彙替換)
         self.converter = opencc.OpenCC("s2twp")
+        # 供繁簡差異比對重用，避免每次抽樣都重新初始化。
+        self.to_simplified = opencc.OpenCC("t2s")
 
         # 定義系統認可的影片與字幕副檔名格式集合
         self.video_exts = {".mkv", ".mp4", ".avi", ".mov", ".wmv"}
@@ -152,8 +154,7 @@ class SubtitleProcessor:
             return None
         return sorted(seeds, key=lambda p: p.stat().st_size, reverse=True)[0]
 
-    @staticmethod
-    def _traditional_ratio_from_text(content: str) -> float:
+    def _traditional_ratio_from_text(self, content: str) -> float:
         """
         估算文本中的繁體比例。
         透過 t2s 比對差異，比例越高代表文本越偏繁體。
@@ -165,8 +166,7 @@ class SubtitleProcessor:
         if not chinese_chars:
             return 0.0
 
-        to_simplified = opencc.OpenCC("t2s")
-        simplified = to_simplified.convert(content)
+        simplified = self.to_simplified.convert(content)
 
         changed_count = 0
         chinese_count = 0
