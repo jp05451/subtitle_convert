@@ -15,8 +15,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        UID: "1000"   # 改成媒體目錄的擁有者 UID
-        GID: "1000"   # 改成媒體目錄的擁有者 GID
+        UID: "1026"   # 改成媒體目錄的擁有者 UID（可用 id 查詢）
+        GID: "100"    # 改成媒體目錄的擁有者 GID（Synology 常見為 users=100）
     image: subtitle-convert:latest
     container_name: subtitle-processor
     restart: unless-stopped

@@ -2,7 +2,8 @@ FROM python:3.12-slim
 
 # ffprobe 用於偵測內嵌繁中字幕（processor 在缺席時會優雅降級）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ffmpeg \
+    curl \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -19,8 +20,19 @@ COPY api.py main.py scan.py ./
 # 支援 build-time 指定 UID/GID，對應主機媒體目錄的擁有者
 ARG UID=1026
 ARG GID=100
-RUN groupadd --gid $GID appgroup && \
-    useradd --uid $UID --gid $GID --create-home appuser
+# 若目標 GID/UID 已存在，改用重用策略避免建置中斷
+RUN if getent group "${GID}" >/dev/null; then \
+        :; \
+    elif getent group appgroup >/dev/null; then \
+        groupmod --gid "${GID}" appgroup; \
+    else \
+        groupadd --gid "${GID}" appgroup; \
+    fi && \
+    if id -u appuser >/dev/null 2>&1; then \
+        usermod --non-unique --uid "${UID}" --gid "${GID}" appuser; \
+    else \
+        useradd --non-unique --uid "${UID}" --gid "${GID}" --create-home appuser; \
+    fi
 USER appuser
 
 # 路徑重映射：Bazarr 容器路徑前綴 → 本容器掛載路徑前綴
