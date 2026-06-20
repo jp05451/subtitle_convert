@@ -419,6 +419,36 @@ class SubtitleProcessor:
         fallback_name = f"{subtitle_path.stem}.zh-TW{subtitle_path.suffix}"
         return subtitle_path.with_name(fallback_name)
 
+    def find_chinese_subtitle(
+        self, video_path: Path, language: str | None = None
+    ) -> Path | None:
+        """定位影片所在資料夾裡最可能是 Bazarr 剛下載的中文字幕。
+
+        優先找與影片同 stem、含 language code 的；多個就挑最新 mtime。
+        跳過已是 .zh-TW 的檔案。
+        """
+        folder = video_path.parent
+        candidates: list[Path] = []
+        for f in folder.iterdir():
+            if f.suffix.lower() not in self.sub_exts:
+                continue
+            if ".zh-tw" in f.name.lower():
+                continue
+            if not self.tag_scorer.to_candidate(f):
+                continue
+            candidates.append(f)
+
+        if not candidates:
+            return None
+
+        def _sort_key(p: Path) -> tuple:
+            stem_match = p.stem.lower().startswith(video_path.stem.lower())
+            lang_match = language and language.lower() in p.name.lower()
+            return (stem_match, bool(lang_match), p.stat().st_mtime)
+
+        # ponytail: sort by (stem match, lang match, newest mtime) — pick last
+        return sorted(candidates, key=_sort_key)[-1]
+
     def process_bazarr_subtitle(
         self,
         subtitle_path: Path,
