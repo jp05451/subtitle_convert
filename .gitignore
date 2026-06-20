@@ -9,4 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Secrets
+.env
+.env.*
+!.env.example
+
 movies/
