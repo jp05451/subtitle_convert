@@ -1,4 +1,4 @@
-FROM --platform=linux/amd64 python:3.12-slim
+FROM python:3.12-slim
 
 # ffprobe 用於偵測內嵌繁中字幕（processor 在缺席時會優雅降級）
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
