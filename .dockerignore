@@ -1,0 +1,37 @@
+# VCS / IDE
+.git
+.github
+.gitignore
+.vscode
+.idea
+
+# Python artifacts
+__pycache__
+*.py[cod]
+*.egg-info
+build
+dist
+wheels
+.venv
+
+# Project meta (not needed at runtime)
+CLAUDE.md
+README.md
+.file-guard
+.python-version
+.claude
+docs
+
+# Tests
+test_*.py
+
+# Docker itself
+Dockerfile
+docker-compose*.yaml
+.dockerignore
+.env
+.env.*
+
+# Misc
+movies
+*.md
