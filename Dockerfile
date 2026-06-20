@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM --platform=linux/amd64 python:3.12-slim
 
 # ffprobe 用於偵測內嵌繁中字幕（processor 在缺席時會優雅降級）
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
@@ -41,7 +41,10 @@ USER appuser
 # 路徑重映射：Bazarr 容器路徑前綴 → 本容器掛載路徑前綴
 # 留空表示不做重映射（兩個容器掛載路徑相同時）
 ENV REMAP_ROOT_FROM="" \
-    REMAP_ROOT_TO=""
+    REMAP_ROOT_TO="" \
+    SONARR_URL="" \
+    RADARR_URL=""
+# SONARR_API_KEY / RADARR_API_KEY 由 docker-compose .env 注入，不寫進 image
 
 EXPOSE 6768
 
