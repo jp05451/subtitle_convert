@@ -2,10 +2,12 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from core.arr import ArrError, resolve_media_path
 from core.processor import SubtitleProcessor
 
 logging.basicConfig(
@@ -50,6 +52,23 @@ class ProcessRequest(BaseModel):
         default=None,
         description="路徑重映射：主機根目錄（覆蓋環境變數 REMAP_ROOT_TO）",
         examples=["/media/movies"],
+    )
+    keep_original: bool = Field(default=False, description="保留原始字幕檔（不刪除）")
+    dry_run: bool = Field(default=False, description="Dry-run 模式：只預覽不寫入")
+
+
+class ProcessByIdRequest(BaseModel):
+    series_id: str | None = Field(
+        default=None,
+        description="Sonarr series ID（空或 None 代表電影，走 Radarr）",
+    )
+    episode_id: str = Field(
+        ...,
+        description="Sonarr episode ID 或 Radarr movie ID",
+    )
+    language: str | None = Field(
+        default=None,
+        description="字幕語言代碼，如 zh（用於定位剛下載的字幕）",
     )
     keep_original: bool = Field(default=False, description="保留原始字幕檔（不刪除）")
     dry_run: bool = Field(default=False, description="Dry-run 模式：只預覽不寫入")
@@ -108,43 +127,103 @@ async def process_subtitle(req: ProcessRequest):
         logger.warning("路徑不是檔案: %s", remapped)
         raise HTTPException(status_code=422, detail=f"路徑指向的不是檔案: {remapped}")
 
-    if remapped.suffix.lower() not in _SUPPORTED_EXTS:
-        logger.info("不支援的副檔名，略過: %s", remapped.name)
+    return await _run_convert(processor, remapped, req.keep_original, req.dry_run)
+
+
+async def _run_convert(
+    processor: SubtitleProcessor,
+    subtitle_path: Path,
+    keep_original: bool,
+    dry_run: bool,
+) -> ProcessResponse:
+    """共用的字幕轉換執行邏輯（/process 和 /process-by-id 都用）。"""
+    if subtitle_path.suffix.lower() not in _SUPPORTED_EXTS:
         return ProcessResponse(
             status="skipped",
-            message=f"不支援的副檔名 '{remapped.suffix}'，僅支援 {sorted(_SUPPORTED_EXTS)}",
-            input_path=str(remapped),
-            dry_run=req.dry_run,
+            message=f"不支援的副檔名 '{subtitle_path.suffix}'，僅支援 {sorted(_SUPPORTED_EXTS)}",
+            input_path=str(subtitle_path),
+            dry_run=dry_run,
         )
 
-    if ".zh-tw" in remapped.name.lower():
-        logger.info("已是 zh-TW 字幕，略過: %s", remapped.name)
+    if ".zh-tw" in subtitle_path.name.lower():
         return ProcessResponse(
             status="skipped",
             message="字幕已是 .zh-TW 格式，無需轉換",
+            input_path=str(subtitle_path),
+            dry_run=dry_run,
+        )
+
+    try:
+        await asyncio.to_thread(
+            processor.run,
+            subtitle_path,
+            not keep_original,
+            dry_run,
+        )
+    except Exception as exc:
+        logger.exception("字幕轉換失敗: %s", subtitle_path)
+        raise HTTPException(status_code=500, detail=f"字幕轉換失敗: {exc}")
+
+    logger.info("處理完成: %s", subtitle_path)
+    return ProcessResponse(
+        status="ok",
+        message="字幕轉換完成" if not dry_run else "Dry-run 預覽完成（未寫入檔案）",
+        input_path=str(subtitle_path),
+        dry_run=dry_run,
+    )
+
+
+@app.post("/process-by-id", response_model=ProcessResponse)
+async def process_subtitle_by_id(req: ProcessByIdRequest):
+    """以 Sonarr/Radarr ID 定位影片，再找出對應的中文字幕進行繁簡轉換。
+
+    Bazarr 後處理指令只需傳整數 ID，不經過 shell 引號邊界，徹底避免檔名含 ' 或 " 時被切斷。
+    """
+    processor: SubtitleProcessor = app.state.processor
+
+    # 驗證 episode_id 是數字
+    if not req.episode_id.strip().isdigit():
+        raise HTTPException(status_code=422, detail="episode_id 必須是數字")
+
+    # 透過 arr API 解析影片路徑
+    try:
+        video_path = await asyncio.to_thread(
+            resolve_media_path, req.series_id, req.episode_id.strip()
+        )
+    except ArrError as exc:
+        logger.error("arr API 錯誤: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    logger.info(
+        "arr 解析: series_id=%s episode_id=%s → %s",
+        req.series_id,
+        req.episode_id,
+        video_path,
+    )
+
+    # 路徑重映射（arr 回傳的路徑 → 本容器掛載路徑）
+    root_from = os.environ.get("REMAP_ROOT_FROM")
+    root_to = os.environ.get("REMAP_ROOT_TO")
+    remapped = processor.remap_input_path(str(video_path), root_from, root_to)
+
+    if not remapped.parent.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail=f"影片所在資料夾不存在: {remapped.parent}",
+        )
+
+    # 在影片資料夾中找剛下載的中文字幕
+    subtitle = processor.find_chinese_subtitle(remapped, language=req.language)
+    if not subtitle:
+        return ProcessResponse(
+            status="skipped",
+            message=f"未找到可轉換的中文字幕 (影片: {remapped.name})",
             input_path=str(remapped),
             dry_run=req.dry_run,
         )
 
-    # ── 執行轉換（用 asyncio.to_thread 避免阻塞 event loop）─
-    try:
-        await asyncio.to_thread(
-            processor.run,
-            remapped,
-            not req.keep_original,
-            req.dry_run,
-        )
-    except Exception as exc:
-        logger.exception("字幕轉換失敗: %s", remapped)
-        raise HTTPException(status_code=500, detail=f"字幕轉換失敗: {exc}")
-
-    logger.info("處理完成: %s", remapped)
-    return ProcessResponse(
-        status="ok",
-        message="字幕轉換完成" if not req.dry_run else "Dry-run 預覽完成（未寫入檔案）",
-        input_path=str(remapped),
-        dry_run=req.dry_run,
-    )
+    logger.info("定位到字幕: %s", subtitle)
+    return await _run_convert(processor, subtitle, req.keep_original, req.dry_run)
 
 
 if __name__ == "__main__":
